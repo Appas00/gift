@@ -18,195 +18,261 @@ function App() {
   const [started, setStarted] = useState(false);
   const [targetFound, setTargetFound] = useState(false);
   const [error, setError] = useState("");
+  const [needsTap, setNeedsTap] = useState(false);
+
+  // ============================================================
+  // MOBILE DETECTION
+  // ============================================================
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(
+    navigator.userAgent
+  );
+
+  // ============================================================
+  // iOS SAFARI REQUIRES USER GESTURE FOR CAMERA
+  // ============================================================
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const isSafari =
+    /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
 
   useEffect(() => {
+    // On iOS Safari, we must wait for a user tap
+    if (isIOS || isSafari) {
+      setNeedsTap(true);
+    }
+  }, [isIOS, isSafari]);
+
+  // ============================================================
+  // AR SETUP FUNCTION
+  // ============================================================
+  const startAR = async () => {
     let mindarThree = null;
     let video = null;
     let mounted = true;
 
-    const startAR = async () => {
-      try {
-        if (!containerRef.current) return;
+    try {
+      if (!containerRef.current) return;
 
-        // ==============================
-        // 1. CREATE MINDAR
-        // ==============================
-        mindarThree = new MindARThree({
-          container: containerRef.current,
-          imageTargetSrc: "/targets.mind",
+      // ==============================
+      // 1. CREATE MINDAR
+      // ==============================
+      mindarThree = new MindARThree({
+        container: containerRef.current,
+        imageTargetSrc: "/gift/targets.mind", // 👈 base path fix
 
-          // Try rear camera first (phones).
-          // Falls back to front camera on laptops.
-          facingMode: "environment",
+        facingMode: "environment",
 
-          // Tracking tuning
-          maxTrack: 1,
-          filterMinCF: 0.0001,
-          filterBeta: 0.001,
-          warmupTolerance: 5,
-          missTolerance: 5,
+        // Tracking tuning for mobile stability
+        maxTrack: 1,
+        filterMinCF: 0.0001,
+        filterBeta: 0.001,
+        warmupTolerance: 5,
+        missTolerance: 5,
 
-          uiLoading: "no",
-          uiScanning: "no",
-          uiError: "no",
-        });
+        uiLoading: "no",
+        uiScanning: "no",
+        uiError: "no",
+      });
 
-        mindarRef.current = mindarThree;
+      mindarRef.current = mindarThree;
 
-        const { renderer, scene, camera } = mindarThree;
+      const { renderer, scene, camera } = mindarThree;
 
-        // ==============================
-        // 2. THREE.JS SETTINGS
-        // ==============================
-        renderer.outputColorSpace = THREE.SRGBColorSpace;
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-        renderer.setSize(window.innerWidth, window.innerHeight);
+      // ==============================
+      // 2. THREE.JS SETTINGS
+      // ==============================
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-        // ==============================
-        // 3. CREATE VIDEO (from Cloudinary)
-        // ==============================
-        video = document.createElement("video");
-        video.src = VIDEO_URL;
+      // 👇 Cap pixel ratio for mobile performance
+      const maxDPR = isMobile ? 1.5 : 2;
+      renderer.setPixelRatio(
+        Math.min(window.devicePixelRatio, maxDPR)
+      );
 
-        video.loop = true;
-        video.muted = true;
-        video.playsInline = true;
-        video.crossOrigin = "anonymous";
+      renderer.setSize(
+        window.innerWidth,
+        window.innerHeight
+      );
 
-        video.setAttribute("playsinline", "");
-        video.setAttribute("webkit-playsinline", "");
+      // ==============================
+      // 3. CREATE VIDEO (Cloudinary)
+      // ==============================
+      video = document.createElement("video");
+      video.src = VIDEO_URL;
 
-        video.preload = "auto";
+      video.loop = true;
+      video.muted = true;
+      video.playsInline = true;
+      video.crossOrigin = "anonymous";
 
-        // 👇 Attach to DOM (hidden). Required by iOS Safari for playback.
-        video.style.display = "none";
-        document.body.appendChild(video);
+      // 👇 iOS-critical attributes
+      video.setAttribute("playsinline", "");
+      video.setAttribute("webkit-playsinline", "");
+      video.setAttribute("muted", "");
 
-        videoRef.current = video;
+      video.preload = "auto";
 
-        // ==============================
-        // 3a. WAIT FOR VIDEO METADATA
-        // ==============================
-        // Make sure Cloudinary video is ready before creating texture.
-        await new Promise((resolve, reject) => {
-          const onLoaded = () => {
-            video.removeEventListener("loadedmetadata", onLoaded);
-            video.removeEventListener("error", onError);
-            resolve();
-          };
-          const onError = (e) => {
-            video.removeEventListener("loadedmetadata", onLoaded);
-            video.removeEventListener("error", onError);
-            reject(
-              new Error(
-                "Failed to load Cloudinary video. Check URL / CORS."
-              )
-            );
-          };
+      video.style.display = "none";
+      document.body.appendChild(video);
 
-          video.addEventListener("loadedmetadata", onLoaded);
-          video.addEventListener("error", onError);
+      videoRef.current = video;
 
-          // If already loaded (cached)
-          if (video.readyState >= 1) onLoaded();
-        });
-
-        console.log("Cloudinary video loaded ✅");
-
-        // ==============================
-        // 4. VIDEO TEXTURE
-        // ==============================
-        const videoTexture = new THREE.VideoTexture(video);
-        videoTexture.colorSpace = THREE.SRGBColorSpace;
-        videoTexture.minFilter = THREE.LinearFilter;
-        videoTexture.magFilter = THREE.LinearFilter;
-        videoTexture.generateMipmaps = false;
-
-        // ==============================
-        // 5. VIDEO PLANE
-        // ==============================
-        const geometry = new THREE.PlaneGeometry(1, 0.5625);
-
-        // ==============================
-        // 6. VIDEO MATERIAL
-        // ==============================
-        const material = new THREE.MeshBasicMaterial({
-          map: videoTexture,
-          side: THREE.DoubleSide,
-          toneMapped: false,
-        });
-
-        // ==============================
-        // 7. VIDEO MESH
-        // ==============================
-        const videoMesh = new THREE.Mesh(geometry, material);
-        videoMeshRef.current = videoMesh;
-        videoMesh.visible = false;
-
-        // ==============================
-        // 8. MINDAR TARGET 0
-        // ==============================
-        const anchor = mindarThree.addAnchor(0);
-
-        // ==============================
-        // 9. ATTACH VIDEO TO TARGET
-        // ==============================
-        anchor.group.add(videoMesh);
-
-        // ==============================
-        // 10. TARGET FOUND
-        // ==============================
-        anchor.onTargetFound = async () => {
-          if (!mounted) return;
-          console.log("TARGET FOUND");
-
-          videoMesh.visible = true;
-          setTargetFound(true);
-
-          try {
-            await video.play();
-            console.log("VIDEO PLAYING:", !video.paused);
-          } catch (err) {
-            console.log("Autoplay failed:", err);
-          }
+      // ==============================
+      // 3a. WAIT FOR METADATA
+      // ==============================
+      await new Promise((resolve, reject) => {
+        const onLoaded = () => {
+          video.removeEventListener(
+            "loadedmetadata",
+            onLoaded
+          );
+          video.removeEventListener("error", onError);
+          resolve();
         };
 
-        // ==============================
-        // 11. TARGET LOST
-        // ==============================
-        anchor.onTargetLost = () => {
-          if (!mounted) return;
-          console.log("TARGET LOST");
-
-          videoMesh.visible = false;
-          setTargetFound(false);
-          video.pause();
+        const onError = () => {
+          video.removeEventListener(
+            "loadedmetadata",
+            onLoaded
+          );
+          video.removeEventListener("error", onError);
+          reject(
+            new Error("Failed to load Cloudinary video.")
+          );
         };
 
-        // ==============================
-        // 12. START AR
-        // ==============================
-        await mindarThree.start();
+        video.addEventListener(
+          "loadedmetadata",
+          onLoaded
+        );
+        video.addEventListener("error", onError);
+
+        if (video.readyState >= 1) onLoaded();
+      });
+
+      console.log("Cloudinary video loaded ✅");
+
+      // ==============================
+      // 4. VIDEO TEXTURE
+      // ==============================
+      const videoTexture = new THREE.VideoTexture(video);
+      videoTexture.colorSpace = THREE.SRGBColorSpace;
+      videoTexture.minFilter = THREE.LinearFilter;
+      videoTexture.magFilter = THREE.LinearFilter;
+      videoTexture.generateMipmaps = false;
+
+      // ==============================
+      // 5. VIDEO PLANE
+      // ==============================
+      // Keep 16:9 aspect ratio
+      const geometry = new THREE.PlaneGeometry(1, 0.5625);
+
+      // ==============================
+      // 6. VIDEO MATERIAL
+      // ==============================
+      const material = new THREE.MeshBasicMaterial({
+        map: videoTexture,
+        side: THREE.DoubleSide,
+        toneMapped: false,
+      });
+
+      // ==============================
+      // 7. VIDEO MESH
+      // ==============================
+      const videoMesh = new THREE.Mesh(
+        geometry,
+        material
+      );
+      videoMeshRef.current = videoMesh;
+      videoMesh.visible = false;
+
+      // ==============================
+      // 8. MINDAR TARGET 0
+      // ==============================
+      const anchor = mindarThree.addAnchor(0);
+
+      // ==============================
+      // 9. ATTACH VIDEO
+      // ==============================
+      anchor.group.add(videoMesh);
+
+      // ==============================
+      // 10. TARGET FOUND
+      // ==============================
+      anchor.onTargetFound = async () => {
         if (!mounted) return;
+        console.log("TARGET FOUND");
 
-        setStarted(true);
-        console.log("AR STARTED");
+        videoMesh.visible = true;
+        setTargetFound(true);
 
-        // ==============================
-        // 13. RENDER LOOP
-        // ==============================
-        renderer.setAnimationLoop(() => {
-          renderer.render(scene, camera);
-        });
-      } catch (err) {
-        console.error("AR ERROR:", err);
-        if (mounted) {
-          setError(err?.message || "Unable to start AR");
+        try {
+          await video.play();
+          console.log("VIDEO PLAYING:", !video.paused);
+        } catch (err) {
+          console.log("Autoplay failed:", err);
         }
-      }
-    };
+      };
 
-    startAR();
+      // ==============================
+      // 11. TARGET LOST
+      // ==============================
+      anchor.onTargetLost = () => {
+        if (!mounted) return;
+        console.log("TARGET LOST");
+
+        videoMesh.visible = false;
+        setTargetFound(false);
+        video.pause();
+      };
+
+      // ==============================
+      // 12. START AR
+      // ==============================
+      await mindarThree.start();
+      if (!mounted) return;
+
+      setStarted(true);
+      console.log("AR STARTED");
+
+      // ==============================
+      // 13. RENDER LOOP
+      // ==============================
+      renderer.setAnimationLoop(() => {
+        renderer.render(scene, camera);
+      });
+
+      // ==============================
+      // 14. RESIZE HANDLER (mobile rotation)
+      // ==============================
+      const handleResize = () => {
+        if (!renderer || !camera) return;
+
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+
+        renderer.setSize(w, h);
+
+        if (camera.isPerspectiveCamera) {
+          camera.aspect = w / h;
+          camera.updateProjectionMatrix();
+        }
+      };
+
+      window.addEventListener(
+        "resize",
+        handleResize
+      );
+      window.addEventListener(
+        "orientationchange",
+        handleResize
+      );
+
+      // Save for cleanup
+      mindarThree._handleResize = handleResize;
+    } catch (err) {
+      console.error("AR ERROR:", err);
+      setError(err?.message || "Unable to start AR");
+    }
 
     // ==============================
     // CLEANUP
@@ -216,6 +282,17 @@ function App() {
 
       if (mindarThree) {
         try {
+          if (mindarThree._handleResize) {
+            window.removeEventListener(
+              "resize",
+              mindarThree._handleResize
+            );
+            window.removeEventListener(
+              "orientationchange",
+              mindarThree._handleResize
+            );
+          }
+
           mindarThree.renderer.setAnimationLoop(null);
           mindarThree.stop();
           mindarThree.renderer.dispose();
@@ -242,7 +319,35 @@ function App() {
         videoMeshRef.current.material.dispose();
       }
     };
-  }, []);
+  };
+
+  // ============================================================
+  // AUTO START (NON-IOS) or WAIT FOR TAP (iOS)
+  // ============================================================
+  useEffect(() => {
+    if (needsTap) return;
+
+    let cleanup;
+    (async () => {
+      cleanup = await startAR();
+    })();
+
+    return () => {
+      if (typeof cleanup === "function") cleanup();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsTap]);
+
+  // ============================================================
+  // MANUAL START (iOS — user gesture)
+  // ============================================================
+  const handleStartTap = async () => {
+    setNeedsTap(false);
+    // Trigger a tiny delay so state update fires first
+    setTimeout(async () => {
+      await startAR();
+    }, 50);
+  };
 
   // ==============================
   // ENABLE SOUND
@@ -258,22 +363,61 @@ function App() {
     }
   };
 
+  // ==============================
+  // UI
+  // ==============================
   return (
     <div className="ar-page">
       {/* CAMERA / AR */}
       <div ref={containerRef} className="ar-container" />
 
+      {/* iOS TAP-TO-START SCREEN */}
+      {needsTap && (
+        <div className="tap-overlay">
+          <div className="tap-card">
+            <div className="tap-icon">📸</div>
+            <h1>Father AR Experience</h1>
+            <p>
+              Tap below to start the camera and
+              see the video come alive on the
+              photo frame.
+            </p>
+            <button
+              className="tap-button"
+              onClick={handleStartTap}
+            >
+              ▶ Start AR
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* STATUS */}
-      <div className="status-box">
-        {!started && !error && <span>Starting AR...</span>}
-        {started && !targetFound && <span>Point camera at photo frame</span>}
-        {targetFound && <span>🎥 Video Playing</span>}
-        {error && <span>Error: {error}</span>}
-      </div>
+      {!needsTap && (
+        <div className="status-box">
+          {!started && !error && (
+            <span>Starting AR...</span>
+          )}
+          {started && !targetFound && (
+            <span>
+              📷 Point camera at photo frame
+            </span>
+          )}
+          {targetFound && (
+            <span>🎥 Video Playing</span>
+          )}
+          {error && (
+            <span>⚠️ {error}</span>
+          )}
+        </div>
+      )}
 
       {/* SOUND */}
       {targetFound && (
-        <button className="sound-button" onClick={enableSound}>
+        <button
+          className="sound-button"
+          onClick={enableSound}
+        >
           🔊 Enable Sound
         </button>
       )}
